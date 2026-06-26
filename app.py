@@ -7,8 +7,6 @@ import pandas as pd
 import streamlit as st
 from huggingface_hub import InferenceClient
 
-from drive_utils import get_drive_service, get_or_create_folder, upload_image_to_drive
-
 # Pinned explicitly — Apache 2.0 licensed (commercial use OK), fast, free on HF's
 # Inference API. Swap this string if you want a different free HF model later.
 HF_IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
@@ -16,7 +14,7 @@ HF_IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
 st.set_page_config(page_title="Bulk Prompt → Image Generator", page_icon="🎨", layout="wide")
 
 st.title("🎨 Bulk Prompt → Image Generator")
-st.caption("Upload an Excel file of prompts → generate images via Hugging Face → save to Google Drive")
+st.caption("Upload an Excel file of prompts → generate images via Hugging Face → download as ZIP")
 
 # ---------------------------------------------------------------------------
 # Sidebar: settings & status
@@ -34,7 +32,6 @@ with st.sidebar:
     img_width, img_height = size_presets[size_label]
 
     st.divider()
-    drive_folder_name = st.text_input("Google Drive folder name", value="Generated Images")
     project_id = st.text_input(
         "Batch/project ID",
         value=datetime.now().strftime("batch_%Y%m%d_%H%M%S"),
@@ -44,25 +41,17 @@ with st.sidebar:
 
     st.divider()
     st.markdown(
-        "**Required secrets** (set in `.streamlit/secrets.toml` locally, "
+        "**Required secret** (set in `.streamlit/secrets.toml` locally, "
         "or in Streamlit Cloud → App settings → Secrets):\n"
         "- `HF_TOKEN`\n"
-        "- `[gcp_service_account]` block (Drive service account JSON)\n"
     )
 
 # ---------------------------------------------------------------------------
 # Validate secrets up front
 # ---------------------------------------------------------------------------
-missing = []
 if "HF_TOKEN" not in st.secrets:
-    missing.append("HF_TOKEN")
-if "gcp_service_account" not in st.secrets:
-    missing.append("gcp_service_account")
-
-if missing:
     st.error(
-        f"Missing required secret(s): {', '.join(missing)}. "
-        "See the README for how to set these up."
+        "Missing required secret: HF_TOKEN. See the README for how to set this up."
     )
     st.stop()
 
@@ -174,9 +163,6 @@ def generate_image_bytes(prompt: str, max_retries: int = 2) -> bytes:
 
 
 if st.button("🚀 Generate all images", type="primary"):
-    drive_service = get_drive_service(st.secrets["gcp_service_account"])
-    folder_id = get_or_create_folder(drive_service, drive_folder_name)
-
     progress = st.progress(0.0)
     status = st.empty()
     results = []
@@ -193,15 +179,13 @@ if st.button("🚀 Generate all images", type="primary"):
         try:
             img_bytes = generate_image_bytes(prompt)
             zf.writestr(fname, img_bytes)
-            drive_link, drive_file_id = upload_image_to_drive(drive_service, folder_id, fname, img_bytes)
             results.append({
-                "id": img_id, "prompt": prompt, "filename": fname,
-                "status": "✅ Success", "drive_link": drive_link, "drive_file_id": drive_file_id,
+                "id": img_id, "prompt": prompt, "filename": fname, "status": "✅ Success",
             })
         except Exception as e:
             results.append({
                 "id": img_id, "prompt": prompt, "filename": fname,
-                "status": f"❌ [{HF_IMAGE_MODEL}] {e}", "drive_link": "", "drive_file_id": "",
+                "status": f"❌ [{HF_IMAGE_MODEL}] {e}",
             })
 
         progress.progress((i + 1) / total)
@@ -215,10 +199,10 @@ if st.button("🚀 Generate all images", type="primary"):
     st.dataframe(results_df, use_container_width=True)
 
     n_ok = (results_df["status"] == "✅ Success").sum()
-    st.success(f"{n_ok}/{total} images generated and uploaded to Drive folder '{drive_folder_name}'.")
+    st.success(f"{n_ok}/{total} images generated.")
 
     st.download_button(
-        "⬇️ Download all as ZIP (local backup)",
+        "⬇️ Download all images as ZIP",
         data=zip_buffer.getvalue(),
         file_name=f"{project_id}_images.zip",
         mime="application/zip",
@@ -235,7 +219,7 @@ if st.button("🚀 Generate all images", type="primary"):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     st.caption(
-        "Tip: keep this log file somewhere safe — stage 2 (image → video) will read it "
-        "to match each image's Drive file ID to its prompt. If you want it in Drive too, "
-        "just drag-and-drop the downloaded file into your 'Generated Images' folder."
+        "Tip: keep both the ZIP and this log file together somewhere safe (e.g. drag "
+        "them into a Google Drive folder yourself, or a local project folder) — "
+        "stage 2 (image → video) will read the log to match each image to its prompt."
     )
