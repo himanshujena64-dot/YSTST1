@@ -27,7 +27,9 @@ def get_or_create_folder(service, folder_name: str, parent_id: str | None = None
     if parent_id:
         query += f" and '{parent_id}' in parents"
 
-    resp = service.files().list(q=query, fields="files(id, name)").execute()
+    resp = service.files().list(
+        q=query, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True
+    ).execute()
     files = resp.get("files", [])
     if files:
         return files[0]["id"]
@@ -35,7 +37,7 @@ def get_or_create_folder(service, folder_name: str, parent_id: str | None = None
     metadata = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
     if parent_id:
         metadata["parents"] = [parent_id]
-    folder = service.files().create(body=metadata, fields="id").execute()
+    folder = service.files().create(body=metadata, fields="id", supportsAllDrives=True).execute()
     return folder["id"]
 
 
@@ -43,16 +45,22 @@ def upload_image_to_drive(
     service, folder_id: str, filename: str, file_bytes: bytes, mimetype: str = "image/png"
 ) -> tuple[str, str]:
     """Uploads a file to Drive. Returns (webViewLink, file_id) — file_id is what
-    a later pipeline stage (image -> video) can use to fetch this exact file."""
+    a later pipeline stage (image -> video) can use to fetch this exact file.
+
+    supportsAllDrives=True is set on every call. Without it, Google sometimes
+    misattributes storage ownership to the service account itself (which has
+    zero quota) even when the destination folder is owned by a real person —
+    this is the documented fix for the storageQuotaExceeded 403 some uploads
+    can intermittently hit."""
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mimetype, resumable=False)
     metadata = {"name": filename, "parents": [folder_id]}
     file = service.files().create(
-        body=metadata, media_body=media, fields="id, webViewLink"
+        body=metadata, media_body=media, fields="id, webViewLink", supportsAllDrives=True
     ).execute()
 
     # Make the file viewable via link (optional — comment out to keep private)
     service.permissions().create(
-        fileId=file["id"], body={"role": "reader", "type": "anyone"}
+        fileId=file["id"], body={"role": "reader", "type": "anyone"}, supportsAllDrives=True
     ).execute()
 
     return file.get("webViewLink", ""), file.get("id", "")
