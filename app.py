@@ -5,15 +5,18 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-from google import genai
-from google.genai import types
+from huggingface_hub import InferenceClient
 
 from drive_utils import get_drive_service, get_or_create_folder, upload_image_to_drive
+
+# Pinned explicitly — Apache 2.0 licensed (commercial use OK), fast, free on HF's
+# Inference API. Swap this string if you want a different free HF model later.
+HF_IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
 
 st.set_page_config(page_title="Bulk Prompt → Image Generator", page_icon="🎨", layout="wide")
 
 st.title("🎨 Bulk Prompt → Image Generator")
-st.caption("Upload an Excel file of prompts → generate images via Google Gemini → save to Google Drive")
+st.caption("Upload an Excel file of prompts → generate images via Hugging Face → save to Google Drive")
 
 # ---------------------------------------------------------------------------
 # Sidebar: settings & status
@@ -21,10 +24,14 @@ st.caption("Upload an Excel file of prompts → generate images via Google Gemin
 with st.sidebar:
     st.header("Settings")
 
-    aspect_ratio = st.selectbox(
-        "Aspect ratio", ["1:1", "16:9", "9:16", "4:3", "3:2", "4:5", "21:9"], index=0,
-        help="9:16 is the vertical format used by YouTube Shorts.",
-    )
+    size_presets = {
+        "Square (1024x1024)": (1024, 1024),
+        "Shorts / vertical 9:16 (768x1344)": (768, 1344),
+        "Widescreen 16:9 (1344x768)": (1344, 768),
+        "Portrait 4:5 (896x1120)": (896, 1120),
+    }
+    size_label = st.selectbox("Image size", list(size_presets.keys()), index=1)
+    img_width, img_height = size_presets[size_label]
 
     st.divider()
     drive_folder_name = st.text_input("Google Drive folder name", value="Generated Images")
@@ -39,7 +46,7 @@ with st.sidebar:
     st.markdown(
         "**Required secrets** (set in `.streamlit/secrets.toml` locally, "
         "or in Streamlit Cloud → App settings → Secrets):\n"
-        "- `GEMINI_API_KEY`\n"
+        "- `HF_TOKEN`\n"
         "- `[gcp_service_account]` block (Drive service account JSON)\n"
     )
 
@@ -47,8 +54,8 @@ with st.sidebar:
 # Validate secrets up front
 # ---------------------------------------------------------------------------
 missing = []
-if "GEMINI_API_KEY" not in st.secrets:
-    missing.append("GEMINI_API_KEY")
+if "HF_TOKEN" not in st.secrets:
+    missing.append("HF_TOKEN")
 if "gcp_service_account" not in st.secrets:
     missing.append("gcp_service_account")
 
@@ -59,7 +66,7 @@ if missing:
     )
     st.stop()
 
-client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+client = InferenceClient(api_key=st.secrets["HF_TOKEN"])
 
 # ---------------------------------------------------------------------------
 # Upload Excel
@@ -146,26 +153,24 @@ def safe_filename(name: str, fallback_id: str) -> str:
     return cleaned or fallback_id
 
 
-def generate_image_bytes(prompt: str) -> bytes:
-    response = client.models.generate_content(
-        model="gemini-2.5-flash-image",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
-        ),
-    )
-
-    candidates = getattr(response, "candidates", None)
-    if not candidates:
-        raise RuntimeError("Gemini returned no candidates (prompt may have been blocked).")
-
-    for part in candidates[0].content.parts:
-        inline_data = getattr(part, "inline_data", None)
-        if inline_data is not None and inline_data.data:
-            return inline_data.data
-
-    raise RuntimeError("Gemini response had no image data — prompt may need rewording.")
+def generate_image_bytes(prompt: str, max_retries: int = 2) -> bytes:
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            image = client.text_to_image(
+                prompt,
+                model=HF_IMAGE_MODEL,
+                width=img_width,
+                height=img_height,
+            )
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            return buf.getvalue()
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries:
+                time.sleep(15)  # model may be cold-starting on HF's free tier
+    raise last_error
 
 
 if st.button("🚀 Generate all images", type="primary"):
@@ -196,7 +201,7 @@ if st.button("🚀 Generate all images", type="primary"):
         except Exception as e:
             results.append({
                 "id": img_id, "prompt": prompt, "filename": fname,
-                "status": f"❌ {e}", "drive_link": "", "drive_file_id": "",
+                "status": f"❌ [{HF_IMAGE_MODEL}] {e}", "drive_link": "", "drive_file_id": "",
             })
 
         progress.progress((i + 1) / total)
@@ -224,19 +229,13 @@ if st.button("🚀 Generate all images", type="primary"):
     log_bytes = log_buf.getvalue()
 
     st.download_button(
-        "⬇️ Download results log (.xlsx)",
+        "⬇️ Download results log (.xlsx) — this is the handoff file for stage 2",
         data=log_bytes,
         file_name=f"{project_id}_log.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
-    # Save the log to Drive too — this is the handoff file the next pipeline
-    # stage (image -> video) will read to map each id to its image.
-    try:
-        log_link, _ = upload_image_to_drive(
-            drive_service, folder_id, f"{project_id}_log.xlsx", log_bytes,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        st.info(f"Handoff log also saved to Drive: {log_link}")
-    except Exception as e:
-        st.warning(f"Could not save log to Drive (you still have the download button above): {e}")
+    st.caption(
+        "Tip: keep this log file somewhere safe — stage 2 (image → video) will read it "
+        "to match each image's Drive file ID to its prompt. If you want it in Drive too, "
+        "just drag-and-drop the downloaded file into your 'Generated Images' folder."
+    )
