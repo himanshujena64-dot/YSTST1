@@ -1,15 +1,16 @@
 # Bulk Prompt → Image Generator
 
 Upload an Excel file full of image-generation prompts → each row gets turned into an
-image via the OpenAI Images API → images are saved to a Google Drive folder (plus
-a ZIP/log download in the browser). Built for Streamlit Community Cloud.
+image via Google's Gemini image model (free, up to 500 images/day) → images are saved
+to a Google Drive folder (plus a ZIP/log download in the browser). Built for Streamlit
+Community Cloud.
 
 ## How it works
 
 - `app.py` — the Streamlit UI: upload, preview, generate, show results
 - `drive_utils.py` — Google Drive upload via a **service account** (no browser login needed,
   which matters because Streamlit Cloud can't pop up a Google OAuth consent screen)
-- Secrets (OpenAI key + Drive credentials) are read from `st.secrets`, never hardcoded
+- Secrets (Gemini key + Drive credentials) are read from `st.secrets`, never hardcoded
 
 ## Excel format
 
@@ -21,10 +22,13 @@ a ZIP/log download in the browser). Built for Streamlit Community Cloud.
 Only `prompt` is required. If `filename` is blank, one is auto-generated.
 Run the app once and click "Generate sample template" if you want a starter file.
 
-## 1. Get an OpenAI API key
+## 1. Get a Gemini API key (free)
 
-1. Go to https://platform.openai.com/api-keys → create a new key.
-2. Make sure the account has billing enabled (image generation isn't on the free tier).
+1. Go to https://aistudio.google.com/apikey
+2. Sign in with the same Google account as your Cloud project.
+3. Click **Create API key** → choose your existing project (e.g. the one you used for
+   the Drive service account) → copy the key (starts with `AIza...`).
+4. No credit card needed. The free tier covers up to 500 image generations/day.
 
 ## 2. Set up Google Drive access (service account)
 
@@ -50,7 +54,7 @@ your app authenticates as directly, using a key file instead of a login.
 ## 3. Configure secrets
 
 Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill in:
-- `OPENAI_API_KEY` — your key from step 1
+- `GEMINI_API_KEY` — your key from step 1
 - `[gcp_service_account]` — open the downloaded JSON file and copy each field into
   the matching key under that section (this is the exact format Streamlit expects)
 
@@ -73,17 +77,17 @@ streamlit run app.py
 2. Go to https://share.streamlit.io → New app → pick your repo/branch → main file `app.py`.
 3. Before or after first deploy, go to App Settings → Secrets and paste your TOML
    (same content as your local `secrets.toml`).
-4. Deploy. The public URL is shareable; only people with the OpenAI/Drive keys can
+4. Deploy. The public URL is shareable; only people with the Gemini/Drive keys can
    ever see those keys — they're never exposed to end users of the app.
 
 ## Notes & gotchas
 
-- **Cost**: every row in your Excel = one paid OpenAI image call. Check pricing at
-  https://openai.com/api/pricing before running a 500-row sheet.
-- **Rate limits**: the app pauses briefly between calls; if you hit rate limits on a
-  large batch, lower batch size or add a longer delay in `app.py`.
-- **Model choice**: `gpt-image-1` is OpenAI's newest image model; `dall-e-3` and
-  `dall-e-2` remain available. Pick from the sidebar.
+- **Free tier limit**: Gemini's free tier allows up to 500 image generations per day
+  and roughly 10 requests/minute. A row-by-row batch over ~10 prompts may need brief
+  pauses — the app already adds a small delay between calls.
+- **Aspect ratio**: pick `9:16` in the sidebar for vertical formats like YouTube Shorts;
+  `1:1`, `16:9`, and others are also available.
+- **Model**: uses `gemini-2.5-flash-image` (the current non-preview Gemini image model).
 - **Public Drive links**: by default, uploaded files are set to "anyone with the
   link can view" so you can share them. Remove that block in `drive_utils.py` if you
   want files to stay private to the service account + people you manually share with.
