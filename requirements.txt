@@ -1,0 +1,7 @@
+streamlit>=1.35
+pandas>=2.0
+openpyxl>=3.1
+openai>=1.40
+requests>=2.31
+google-auth>=2.30
+google-api-python-client>=2.130
