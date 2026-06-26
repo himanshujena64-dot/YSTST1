@@ -4,16 +4,16 @@ import zipfile
 from datetime import datetime
 
 import pandas as pd
-import requests
 import streamlit as st
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 from drive_utils import get_drive_service, get_or_create_folder, upload_image_to_drive
 
 st.set_page_config(page_title="Bulk Prompt → Image Generator", page_icon="🎨", layout="wide")
 
 st.title("🎨 Bulk Prompt → Image Generator")
-st.caption("Upload an Excel file of prompts → generate images via OpenAI → save to Google Drive")
+st.caption("Upload an Excel file of prompts → generate images via Google Gemini → save to Google Drive")
 
 # ---------------------------------------------------------------------------
 # Sidebar: settings & status
@@ -21,14 +21,10 @@ st.caption("Upload an Excel file of prompts → generate images via OpenAI → s
 with st.sidebar:
     st.header("Settings")
 
-    model = st.selectbox("Image model", ["gpt-image-1", "dall-e-3", "dall-e-2"], index=0)
-    size = st.selectbox(
-        "Image size",
-        ["1024x1024", "1024x1792", "1792x1024"] if model == "dall-e-3" else ["1024x1024", "1536x1024", "1024x1536"],
-        index=0,
+    aspect_ratio = st.selectbox(
+        "Aspect ratio", ["1:1", "16:9", "9:16", "4:3", "3:2", "4:5", "21:9"], index=0,
+        help="9:16 is the vertical format used by YouTube Shorts.",
     )
-    quality = st.selectbox("Quality", ["standard", "high"], index=0,
-                            help="gpt-image-1 uses low/medium/high; dall-e-3 uses standard/hd. The app maps automatically.")
 
     st.divider()
     drive_folder_name = st.text_input("Google Drive folder name", value="Generated Images")
@@ -43,7 +39,7 @@ with st.sidebar:
     st.markdown(
         "**Required secrets** (set in `.streamlit/secrets.toml` locally, "
         "or in Streamlit Cloud → App settings → Secrets):\n"
-        "- `OPENAI_API_KEY`\n"
+        "- `GEMINI_API_KEY`\n"
         "- `[gcp_service_account]` block (Drive service account JSON)\n"
     )
 
@@ -51,8 +47,8 @@ with st.sidebar:
 # Validate secrets up front
 # ---------------------------------------------------------------------------
 missing = []
-if "OPENAI_API_KEY" not in st.secrets:
-    missing.append("OPENAI_API_KEY")
+if "GEMINI_API_KEY" not in st.secrets:
+    missing.append("GEMINI_API_KEY")
 if "gcp_service_account" not in st.secrets:
     missing.append("gcp_service_account")
 
@@ -63,7 +59,7 @@ if missing:
     )
     st.stop()
 
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 # ---------------------------------------------------------------------------
 # Upload Excel
@@ -151,23 +147,25 @@ def safe_filename(name: str, fallback_id: str) -> str:
 
 
 def generate_image_bytes(prompt: str) -> bytes:
-    kwargs = {"model": model, "prompt": prompt, "size": size, "n": 1}
-    if model == "dall-e-3":
-        kwargs["quality"] = "hd" if quality == "high" else "standard"
-    elif model == "gpt-image-1":
-        kwargs["quality"] = "high" if quality == "high" else "medium"
+    response = client.models.generate_content(
+        model="gemini-2.5-flash-image",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+        ),
+    )
 
-    result = client.images.generate(**kwargs)
-    item = result.data[0]
+    candidates = getattr(response, "candidates", None)
+    if not candidates:
+        raise RuntimeError("Gemini returned no candidates (prompt may have been blocked).")
 
-    if getattr(item, "b64_json", None):
-        import base64
-        return base64.b64decode(item.b64_json)
-    if getattr(item, "url", None):
-        r = requests.get(item.url, timeout=60)
-        r.raise_for_status()
-        return r.content
-    raise RuntimeError("API response had neither b64_json nor url.")
+    for part in candidates[0].content.parts:
+        inline_data = getattr(part, "inline_data", None)
+        if inline_data is not None and inline_data.data:
+            return inline_data.data
+
+    raise RuntimeError("Gemini response had no image data — prompt may need rewording.")
 
 
 if st.button("🚀 Generate all images", type="primary"):
