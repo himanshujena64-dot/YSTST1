@@ -7,9 +7,11 @@ import pandas as pd
 import streamlit as st
 from huggingface_hub import InferenceClient
 
-# Pinned explicitly — Apache 2.0 licensed (commercial use OK), fast, free on HF's
-# Inference API. Swap this string if you want a different free HF model later.
-HF_IMAGE_MODEL = "black-forest-labs/FLUX.1-schnell"
+# Pinned explicitly — Apache 2.0 licensed (commercial use OK, important since this
+# feeds monetized YouTube content), strong prompt adherence. FLUX.1-schnell (the
+# previous choice here) is speed-optimized and trades prompt accuracy for speed —
+# swap this string if you want to try yet another free HF model later.
+HF_IMAGE_MODEL = "Qwen/Qwen-Image"
 
 st.set_page_config(page_title="Bulk Prompt → Image Generator", page_icon="🎨", layout="wide")
 
